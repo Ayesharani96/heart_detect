@@ -1,0 +1,19 @@
+# Node.js dependencies
+node_modules/
+
+# Environment variables
+.env
+.venv/
+
+# Logs
+*.log
+
+# Python cache (if any Python scripts)
+__pycache__/
+*.pyc
+
+# Expo folder (not needed in backend)
+.expo/
+
+# Uploads (if you don’t want to push uploaded files)
+uploads/
