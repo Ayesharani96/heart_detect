@@ -9,73 +9,125 @@ import {
   Dimensions,
   Image,
   ActivityIndicator,
+  Alert,
 } from "react-native";
-import { LineChart } from "react-native-chart-kit";
+import { AnimatedCircularProgress } from "react-native-circular-progress";
 import { Ionicons } from "@expo/vector-icons";
+import axios from "axios";
 
-const BASE_URL = "http://192.168.1.13:5000";
 const screenWidth = Dimensions.get("window").width;
+const API_BASE_URL = "https://70a2f1e8c5be.ngrok-free.app"; // 🔹 update every time you restart ngrok
 
 const ResultScreen = ({ route, navigation }) => {
-  const { result, userData, images, reportName } = route.params || {};
+  const { result: initialResult, userData, images, reportName } = route.params || {};
   const viewRef = useRef();
 
   const [risk, setRisk] = useState("Unknown");
-  const [recommendation, setRecommendation] = useState("");
+  const [recommendations, setRecommendations] = useState([]);
+  const [predictionScore, setPredictionScore] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [basedOn, setBasedOn] = useState("Pending");
 
-  // ✅ Use backend-provided fields instead of recalculating risk
   useEffect(() => {
-    if (!result) return;
+    const fetchPrediction = async () => {
+      if (initialResult) {
+        processResult(initialResult);
+        return;
+      }
 
-    const { fusion_risk_label = "Unknown" } = result;
+      if (!userData) {
+        Alert.alert("Error", "Missing user data for prediction.");
+        return;
+      }
 
-    setRisk(fusion_risk_label);
+      try {
+        setLoading(true);
 
-    // Recommendation logic
-    let rec = "";
-    switch (fusion_risk_label) {
-      case "Low":
-        rec = "Maintain a healthy lifestyle.";
-        break;
-      case "Moderate":
-        rec = "Monitor your health and exercise regularly.";
-        break;
-      case "High":
-      default:
-        rec = "Consult a doctor soon.";
+        const formData = new FormData();
+        Object.entries(userData).forEach(([key, val]) => formData.append(key, val));
+
+        if (images && images.length === 3) {
+          formData.append("ecg", { uri: images[0], type: "image/jpeg", name: "ecg.jpg" });
+          formData.append("echo", { uri: images[1], type: "image/jpeg", name: "echo.jpg" });
+          formData.append("xray", { uri: images[2], type: "image/jpeg", name: "xray.jpg" });
+        }
+
+        const response = await axios.post(${API_BASE_URL}/predict, formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+
+        if (response.data?.final_decision) {
+          processResult(response.data);
+        } else {
+          Alert.alert("Error", response.data?.message || "No result from server.");
+        }
+      } catch (err) {
+        console.error("Prediction Error:", err.response?.data || err.message);
+        Alert.alert("Error", "Failed to fetch prediction.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPrediction();
+  }, [initialResult]);
+
+  // 🔹 Updated processResult function
+  const processResult = (res) => {
+    let prob = 0;
+    const finalDecision = res.final_decision || "Unknown";
+
+    // Fusion Model probability
+    if (res.fusion_model?.disease_prob !== undefined) {
+      prob = Math.round(res.fusion_model.disease_prob * 100);
+      setBasedOn("Fusion (Images + Tabular)");
+
+    // Tabular Model probability
+    } else if (res.tabular_model?.probabilities !== undefined) {
+      prob = Math.round(res.tabular_model.probabilities[1] * 100);
+      setBasedOn("Only Tabular Data");
     }
-    setRecommendation(rec);
-  }, [result]);
 
-  const getRiskColor = (r) => {
-    switch ((r || "").toLowerCase()) {
-      case "high":
-        return "#B71C1C";
-      case "moderate":
-        return "#FF9800";
-      case "low":
-        return "#388E3C";
-      default:
-        return "#000";
+    setRisk(finalDecision);
+    setPredictionScore(prob);
+
+    // recommendations
+    let recs = [];
+    if (finalDecision.toLowerCase().includes("high")) {
+      recs = [
+        "See a doctor as soon as possible.",
+        "Do not ignore chest pain or shortness of breath.",
+        "Avoid heavy exercise until checked by a doctor.",
+      ];
+    } else if (finalDecision.toLowerCase().includes("moderate") || finalDecision.toLowerCase().includes("medium")) {
+      recs = [
+        "Keep track of your blood pressure and sugar.",
+        "Eat healthy and avoid smoking or drinking.",
+        "Visit a doctor if symptoms get worse.",
+      ];
+    } else {
+      recs = [
+        "Keep eating a balanced diet.",
+        "Exercise regularly.",
+        "Avoid smoking and excessive alcohol.",
+      ];
     }
+    setRecommendations(recs);
   };
 
-  const chartData = {
-    labels: ["Low", "Moderate", "High"],
-    datasets: [
-      {
-        data: result?.fusion_risk_probs || [0, 0, 0],
-        color: () => "#B71C1C",
-      },
-    ],
+  const getRiskColor = (r) => {
+    const text = (r || "").toLowerCase();
+    if (text.includes("high")) return "#800000";
+    if (text.includes("low")) return "#388E3C";
+    if (text.includes("moderate") || text.includes("medium")) return "#F9A825";
+    return "#000";
   };
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator size="large" color="#B71C1C" />
-        <Text style={{ marginTop: 10 }}>Saving your report...</Text>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#800000" />
+        <Text style={{ marginTop: 10 }}>Processing your result...</Text>
       </View>
     );
   }
@@ -84,17 +136,15 @@ const ResultScreen = ({ route, navigation }) => {
     <ScrollView contentContainerStyle={styles.container}>
       <View collapsable={false} ref={viewRef}>
         <View style={styles.header}>
-          <Text style={styles.headerText}>
-            {reportName || "Detection Result"}
-          </Text>
+          <Text style={styles.headerText}>{reportName || "Detection Result"}</Text>
+          <Text style={styles.subHeader}>Based on: {basedOn}</Text>
         </View>
 
         <View style={styles.riskBox}>
           <Ionicons name="heart" size={60} color={getRiskColor(risk)} />
           <View style={{ marginLeft: 15 }}>
-            <Text
-              style={[styles.riskTitle, { color: getRiskColor(risk) }]}
-            >{`${risk} Risk`}</Text>
+            <Text style={[styles.riskTitle, { color: getRiskColor(risk) }]}>{risk}</Text>
+            <Text style={styles.riskSubtitle}>Probability: {predictionScore}%</Text>
           </View>
         </View>
 
@@ -103,32 +153,38 @@ const ResultScreen = ({ route, navigation }) => {
             <Text style={styles.boxTitle}>Your Entered Data</Text>
             {Object.entries(userData || {}).map(([key, val]) => (
               <Text key={key} style={styles.dataText}>
-                {`${key.charAt(0).toUpperCase() + key.slice(1)}: ${val}`}
+                {key.charAt(0).toUpperCase() + key.slice(1)}: {val}
               </Text>
             ))}
           </View>
 
-          <View style={{ flex: 1 }}>
-            <LineChart
-              data={chartData}
-              width={screenWidth / 2 - 40}
-              height={220}
-              chartConfig={{
-                backgroundColor: "#fff",
-                backgroundGradientFrom: "#F8EAEA",
-                backgroundGradientTo: "#F8EAEA",
-                decimalPlaces: 2,
-                color: (opacity = 1) => `rgba(183,28,28,${opacity})`,
-                labelColor: () => "#000",
-              }}
-              style={styles.chart}
-            />
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+            <AnimatedCircularProgress
+              size={150}
+              width={15}
+              fill={predictionScore}
+              tintColor={getRiskColor(risk)}
+              backgroundColor="#e0e0e0"
+            >
+              {() => (
+                <Text style={{ fontSize: 18, fontWeight: "bold", color: getRiskColor(risk) }}>
+                  {predictionScore}%
+                </Text>
+              )}
+            </AnimatedCircularProgress>
+            <Text style={{ marginTop: 10, fontWeight: "bold", color: getRiskColor(risk) }}>
+              {risk}
+            </Text>
           </View>
         </View>
 
         <View style={styles.recBox}>
-          <Text style={styles.recTitle}>Recommendation</Text>
-          <Text style={styles.recText}>{recommendation}</Text>
+          <Text style={styles.recTitle}>Recommendations</Text>
+          {recommendations.map((rec, idx) => (
+            <Text key={idx} style={styles.recText}>
+              • {rec}
+            </Text>
+          ))}
         </View>
 
         {images && images.length > 0 && (
@@ -136,17 +192,7 @@ const ResultScreen = ({ route, navigation }) => {
             <Text style={styles.boxTitle}>Uploaded Reports</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {images.map((uri, index) => (
-                <Image
-                  key={index}
-                  source={{ uri }}
-                  style={{
-                    width: 150,
-                    height: 150,
-                    borderRadius: 10,
-                    marginRight: 10,
-                  }}
-                  resizeMode="contain"
-                />
+                <Image key={index} source={{ uri }} style={styles.reportImage} resizeMode="contain" />
               ))}
             </ScrollView>
           </View>
@@ -155,13 +201,7 @@ const ResultScreen = ({ route, navigation }) => {
         <TouchableOpacity
           style={styles.saveBtn}
           onPress={() =>
-            navigation.navigate("AddReportName", {
-              result,
-              risk,
-              recommendation,
-              userData,
-              images,
-            })
+            navigation.navigate("AddReportName", { risk, recommendations, predictionScore, userData, images })
           }
         >
           <Text style={styles.btnText}>Save Result</Text>
@@ -171,77 +211,39 @@ const ResultScreen = ({ route, navigation }) => {
   );
 };
 
+export default ResultScreen;
+
 const styles = StyleSheet.create({
-  container: { flexGrow: 1, alignItems: "center", backgroundColor: "#622c2c" },
-  header: {
-    backgroundColor: "#800000",
-    width: "100%",
-    paddingVertical: 17,
-    borderBottomLeftRadius: 22,
-    borderBottomRightRadius: 22,
-    marginBottom: 21,
-  },
-  headerText: {
-    color: "#fff",
-    fontSize: 20,
-    fontWeight: "bold",
-    textAlign: "center",
-  },
+  container: { padding: 20, backgroundColor: "#fff", flexGrow: 1 },
+  header: { alignItems: "center", marginBottom: 10 },
+  headerText: { fontSize: 22, fontWeight: "bold", color: "#800000" },
+  subHeader: { fontSize: 14, color: "#666", marginTop: 4 },
   riskBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F5DCDC",
-    padding: 20,
-    borderRadius: 12,
-    width: "90%",
-    marginBottom: 20,
-  },
-  riskTitle: { fontSize: 22, fontWeight: "bold" },
-  rowContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    width: "90%",
-    marginBottom: 20,
-  },
-  chart: { borderRadius: 6 },
-  recBox: {
-    borderRadius: 15,
-    padding: 13,
-    width: "90%",
-    marginBottom: 20,
-    backgroundColor: "#fff",
-  },
-  recTitle: {
-    fontSize: 12,
-    fontWeight: "bold",
-    marginBottom: 10,
-    color: "#800000",
-  },
-  recText: { fontSize: 16, color: "#333" },
-  box: {
-    width: "90%",
-    backgroundColor: "#fff",
-    borderRadius: 10,
+    backgroundColor: "#FDECEC",
     padding: 15,
-    marginTop: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 3,
+    borderRadius: 10,
+    marginBottom: 20,
   },
-  boxTitle: { fontSize: 16, fontWeight: "bold", marginBottom: 5 },
-  dataText: { fontSize: 12, color: "#444", marginBottom: 5 },
+  riskTitle: { fontSize: 20, fontWeight: "bold" },
+  riskSubtitle: { fontSize: 14, color: "#555" },
+  rowContainer: { flexDirection: "row", marginBottom: 20 },
+  box: { backgroundColor: "#FDECEC", borderRadius: 10, padding: 10 },
+  boxTitle: { fontWeight: "bold", marginBottom: 5, color: "#800000" },
+  dataText: { fontSize: 13, color: "#333" },
+  recBox: { backgroundColor: "#fff8f8", padding: 15, borderRadius: 10, marginBottom: 20 },
+  recTitle: { fontWeight: "bold", fontSize: 16, marginBottom: 5, color: "#800000" },
+  recText: { fontSize: 14, color: "#444", marginBottom: 5 },
+  reportImage: { width: 120, height: 120, marginRight: 10, borderRadius: 10 },
   saveBtn: {
     backgroundColor: "#800000",
     padding: 15,
-    borderRadius: 12,
-    marginTop: 20,
-    width: "80%",
+    borderRadius: 10,
     alignItems: "center",
-    marginBottom: 30,
+    marginTop: 20,
+    marginBottom: 40,
   },
-  btnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  btnText: { color: "#fff", fontWeight: "bold" },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
 });
-
-export default ResultScreen;
